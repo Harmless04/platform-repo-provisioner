@@ -238,7 +238,7 @@ jobs:
 
             switch (status) {
               case "SUCCESS":
-                body = `✅ Repository created successfully.\n\n${url}`;
+                body = ` Repository created successfully.\n\n${url}`;
                 break;
               case "DUPLICATE":
                 body = `⚠️ Repository already exists.\n\n${url}\n\nPlease open a fresh issue with corrected values.`;
