@@ -192,7 +192,7 @@ jobs:
                   "",
                   "jobs:",
                   "  mirror:",
-                  "    uses: Harmless04/central-workflows/.github/workflows/provision-gitlab-mirror.yml@main",
+                  "    uses: gitlab-poc-org/central-workflows/.github/workflows/provision-gitlab-mirror.yml@main",
                   "    secrets: inherit",
                   ""
                 ];
