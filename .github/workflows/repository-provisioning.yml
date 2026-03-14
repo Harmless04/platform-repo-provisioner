@@ -139,12 +139,13 @@ jobs:
               console.log("Creating repository:", finalName);
 
             
-              const repo = await github.rest.repos.createForAuthenticatedUser({
+              const repo = await github.rest.repos.createInOrg({
+                org: context.repo.owner,
                 name: finalName,
                 description,
-                visibility: visibility === "internal" ? "private" : visibility,
-               auto_init: autoInit
-              });
+                visibility,
+                auto_init: autoInit
+                  });
 
               
 
