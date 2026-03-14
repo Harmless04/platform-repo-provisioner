@@ -1,0 +1,62 @@
+name: "Repository Creation Request"
+description: "Request a new repository to be provisioned"
+title: "[REPO-CREATION-REQUEST] "
+labels:
+  - "repo-creation-request"
+body:
+  - type: input
+    id: product
+    attributes:
+      label: "Product Line"
+      placeholder: "e.g. product"
+    validations:
+      required: true
+
+  - type: input
+    id: aspect
+    attributes:
+      label: "Aspect / Domain"
+      placeholder: "e.g. backend"
+    validations:
+      required: true
+
+  - type: input
+    id: name
+    attributes:
+      label: "Repository Name"
+      placeholder: "e.g. transaction-service (kebab-case only)"
+    validations:
+      required: true
+
+  - type: input
+    id: tenant
+    attributes:
+      label: "Tenant Name (Optional)"
+      placeholder: "e.g. clientname — leave blank if not a multi-tenant setup"
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "Repository Description"
+      placeholder: "A short description of what this repository will contain"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: visibility
+    attributes:
+      label: "Repository Visibility"
+      options:
+        - "Private"
+        - "Internal"
+        - "Public"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: options
+    attributes:
+      label: "Repository Options (Optional)"
+      options:
+        - label: "Initialize repository with README"
+        - label: "Add GitLab Mirror Workflow"

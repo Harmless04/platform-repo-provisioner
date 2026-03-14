@@ -1,62 +1,267 @@
-name: "Repository Creation Request"
-description: "Request a new repository to be provisioned"
-title: "[REPO-CREATION-REQUEST] "
-labels:
-  - "repo-creation-request"
-body:
-  - type: input
-    id: product
-    attributes:
-      label: "Product Line"
-      placeholder: "e.g. product"
-    validations:
-      required: true
+name: Repository Provisioning
 
-  - type: input
-    id: aspect
-    attributes:
-      label: "Aspect / Domain"
-      placeholder: "e.g. backend"
-    validations:
-      required: true
+on:
+  issues:
+    types: [opened, edited]
 
-  - type: input
-    id: name
-    attributes:
-      label: "Repository Name"
-      placeholder: "e.g. transaction-service (kebab-case only)"
-    validations:
-      required: true
+permissions:
+  contents: write
+  issues: write
 
-  - type: input
-    id: tenant
-    attributes:
-      label: "Tenant Name (Optional)"
-      placeholder: "e.g. clientname — leave blank if not a multi-tenant setup"
+jobs:
+  process:
+    if: >
+      github.event.issue.state == 'open' &&
+      contains(github.event.issue.labels.*.name, 'repo-creation-request') &&
+      startsWith(github.event.issue.title, '[REPO-CREATION-REQUEST]')
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.logic.outputs.status }}
+      message: ${{ steps.logic.outputs.message }}
+      repo_url: ${{ steps.logic.outputs.repo_url }}
 
-  - type: textarea
-    id: description
-    attributes:
-      label: "Repository Description"
-      placeholder: "A short description of what this repository will contain"
-    validations:
-      required: true
+    steps:
+      # Uses a GitHub App instead of a PAT 
+      - uses: tibdex/github-app-token@v2
+        id: app-token
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
 
-  - type: dropdown
-    id: visibility
-    attributes:
-      label: "Repository Visibility"
-      options:
-        - "Private"
-        - "Internal"
-        - "Public"
-    validations:
-      required: true
+      - name: Process Request
+        id: logic
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const body = context.payload.issue.body;
 
-  - type: checkboxes
-    id: options
-    attributes:
-      label: "Repository Options (Optional)"
-      options:
-        - label: "Initialize repository with README"
-        - label: "Add GitLab Mirror Workflow"
+            console.log("----- Repository Provisioning Started -----");
+            console.log("Issue:", context.issue.number);
+
+            // Extracts a field value from the GitHub issue form body
+            function extract(label) {
+              const regex = new RegExp(`### ${label}\\s+([\\s\\S]*?)(?=\\n###|$)`);
+              const match = body.match(regex);
+              return match ? match[1].trim() : null;
+            }
+
+            try {
+              const product        = extract("Product Line");
+              const aspect         = extract("Aspect / Domain");
+              const name           = extract("Repository Name");
+              let   tenant         = extract("Tenant Name \\(Optional\\)");
+              const description    = extract("Repository Description");
+              const visibilityRaw  = extract("Repository Visibility");
+
+              // Treat blank / unfilled optional field as absent
+              if (!tenant || tenant === "_No response_") {
+                tenant = null;
+              }
+
+              // ── Validate visibility ──────────────────────────────────────────
+              let visibility;
+              if      (visibilityRaw?.includes("Private"))  visibility = "private";
+              else if (visibilityRaw?.includes("Public"))   visibility = "public";
+              else if (visibilityRaw?.includes("Internal")) visibility = "internal";
+              else {
+                core.setOutput("status", "PARSE_ERROR");
+                core.setOutput("message", "Invalid visibility option selected.");
+                return;
+              }
+
+              // ── Validate required fields ─────────────────────────────────────
+              if (!product || !aspect || !name || !description || !visibilityRaw) {
+                core.setOutput("status", "PARSE_ERROR");
+                core.setOutput("message", "Missing required fields.");
+                return;
+              }
+
+              // ── Enforce kebab-case repo name ─────────────────────────────────
+              if (!/^[a-z0-9-]+$/.test(name)) {
+                core.setOutput("status", "PARSE_ERROR");
+                core.setOutput("message", "Repository name must be kebab-case (lowercase letters, numbers, and hyphens only).");
+                return;
+              }
+
+              // ── Parse optional checkboxes ────────────────────────────────────
+              const repositoryOptionsRaw = extract("Repository Options \\(Optional\\)");
+
+              const autoInit = !!(
+                repositoryOptionsRaw &&
+                repositoryOptionsRaw.includes("- [x] Initialize repository with README")
+              );
+
+              const addGitlabMirror = !!(
+                repositoryOptionsRaw &&
+                repositoryOptionsRaw.includes("- [x] Add GitLab Mirror Workflow")
+              );
+
+              console.log("Auto init:", autoInit);
+              console.log("Add GitLab mirror workflow:", addGitlabMirror);
+
+              // GitLab mirror requires a README commit to push the workflow file into
+              if (addGitlabMirror && !autoInit) {
+                core.setOutput("status", "PARSE_ERROR");
+                core.setOutput("message", "'Add GitLab Mirror Workflow' requires 'Initialize repository with README' to also be checked.");
+                return;
+              }
+
+              // ── Build final repository name ──────────────────────────────────
+              // Pattern: {product}-{aspect}-{name}  or  {product}-{aspect}-{name}-{tenant}
+              const finalName = tenant
+                ? `${product}-${aspect}-${name}-${tenant}`
+                : `${product}-${aspect}-${name}`;
+
+              console.log("Checking for duplicate:", finalName);
+
+              // ── Duplicate check ──────────────────────────────────────────────
+              try {
+                const existing = await github.rest.repos.get({
+                  owner: context.repo.owner,
+                  repo: finalName
+                });
+                core.setOutput("status", "DUPLICATE");
+                core.setOutput("repo_url", existing.data.html_url);
+                core.setOutput("message", "Repository already exists.");
+                return;
+              } catch (err) {
+                if (err.status === 404) {
+                  console.log("No duplicate found. Proceeding.");
+                } else {
+                  core.setOutput("status", "ERROR");
+                  core.setOutput("message", `Duplicate check failed: ${err.message}`);
+                  return;
+                }
+              }
+
+              // ── Create repository ────────────────────────────────────────────
+              console.log("Creating repository:", finalName);
+
+            
+              const repo = await github.rest.repos.createForAuthenticatedUser({
+                name: finalName,
+                description,
+                visibility: visibility === "internal" ? "private" : visibility,
+               auto_init: autoInit
+              });
+
+              
+
+              console.log("Repository created:", repo.data.html_url);
+
+              // ── Apply topics ─────────────────────────────────────────────────
+              // Topics are the single source of truth for the GitLab mirror workflow
+              // to reconstruct the group hierarchy — do not change the prefixes.
+              function sanitizeTopic(value) {
+                return value
+                  .toLowerCase()
+                  .replace(/[^a-z0-9-]/g, "-")
+                  .replace(/-+/g, "-")
+                  .replace(/^-|-$/g, "");
+              }
+
+              const topics = [
+                `product-${sanitizeTopic(product)}`,
+                `aspect-${sanitizeTopic(aspect)}`,
+                `repo-${sanitizeTopic(name)}`
+              ];
+
+              if (tenant) topics.push(`tenant-${sanitizeTopic(tenant)}`);
+
+              console.log("Applying topics:", topics);
+
+              await github.rest.repos.replaceAllTopics({
+                owner: context.repo.owner,
+                repo: finalName,
+                names: topics
+              });
+
+              // ── Optionally push GitLab mirror caller workflow ─────────────────
+              if (addGitlabMirror) {
+                console.log("Pushing GitLab mirror caller workflow...");
+
+                // Points to the reusable workflow in your central-workflows repo.
+                // Update YOUR_ORG and YOUR_CENTRAL_WORKFLOWS_REPO before using.
+                const lines = [
+                  "name: Provision GitLab Mirror",
+                  "",
+                  "on:",
+                  "  workflow_dispatch:",
+                  "",
+                  "jobs:",
+                  "  mirror:",
+                  "    uses: Harmless04/central-workflows/.github/workflows/provision-gitlab-mirror.yml@main",
+                  "    secrets: inherit",
+                  ""
+                ];
+
+                await github.rest.repos.createOrUpdateFileContents({
+                  owner: context.repo.owner,
+                  repo: finalName,
+                  path: ".github/workflows/gitlab-mirror.yml",
+                  message: "chore: add GitLab mirror caller workflow",
+                  content: Buffer.from(lines.join("\n")).toString("base64")
+                });
+
+                console.log("GitLab mirror workflow pushed.");
+              }
+
+              core.setOutput("status", "SUCCESS");
+              core.setOutput("repo_url", repo.data.html_url);
+              core.setOutput("message", addGitlabMirror
+                ? "Repository created successfully with topics and GitLab mirror workflow applied."
+                : "Repository created successfully with topics applied."
+              );
+
+            } catch (unhandledError) {
+              console.error("Unhandled error:", unhandledError.message);
+              core.setOutput("status", "ERROR");
+              core.setOutput("message", unhandledError.message);
+            }
+
+  # ── Finalise: comment on the issue and close if done ──────────────────────
+  finalize:
+    needs: process
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Comment and close if needed
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status  = "${{ needs.process.outputs.status }}";
+            const message = "${{ needs.process.outputs.message }}";
+            const url     = "${{ needs.process.outputs.repo_url }}";
+
+            let body = "";
+
+            switch (status) {
+              case "SUCCESS":
+                body = `✅ Repository created successfully.\n\n${url}`;
+                break;
+              case "DUPLICATE":
+                body = `⚠️ Repository already exists.\n\n${url}\n\nPlease open a fresh issue with corrected values.`;
+                break;
+              case "PARSE_ERROR":
+                body = `❌ Validation error: ${message}\n\nPlease edit the issue and correct the highlighted fields.`;
+                break;
+              default:
+                body = `🔥 Unexpected error: ${message}`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+            if (status === "SUCCESS" || status === "DUPLICATE") {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                state: "closed"
+              });
+            }
